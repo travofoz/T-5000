@@ -4,7 +4,7 @@ import inspect
 import logging
 import pkgutil
 from pathlib import Path
-from typing import Callable, Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional, Union # <-- Added Union
 
 # --- Tool Registry ---
 # Stores registered tool functions and their associated metadata (schema)
@@ -54,82 +54,88 @@ def register_tool(func: Optional[Callable] = None, *, name: Optional[str] = None
 
     # 2. Parameters
     if parameters is not None:
-        tool_schema["parameters"] = parameters
+        # Basic validation of provided parameters structure
+        if isinstance(parameters, dict):
+             tool_schema["parameters"] = parameters
+        else:
+             logging.error(f"Explicit 'parameters' for tool '{tool_name}' must be a dictionary. Ignoring provided value: {parameters}")
+             tool_schema["parameters"] = {} # Set empty params if invalid structure provided
     else:
         # Infer basic parameters from signature
-        sig = inspect.signature(func)
-        inferred_params = {}
-        type_mapping = {
-            str: "string",
-            int: "integer",
-            float: "number",
-            bool: "boolean",
-            list: "array",
-            List: "array", # Handle typing.List
-            dict: "object",
-            Dict: "object", # Handle typing.Dict
-            Optional[str]: "string", # Handle Optionals simply for now
-            Optional[int]: "integer",
-            Optional[float]: "number",
-            Optional[bool]: "boolean",
-            Optional[list]: "array",
-            Optional[List]: "array",
-            Optional[dict]: "object",
-            Optional[Dict]: "object",
-        }
+        try:
+             sig = inspect.signature(func)
+             inferred_params = {}
+             type_mapping = {
+                 str: "string", int: "integer", float: "number", bool: "boolean",
+                 list: "array", List: "array", dict: "object", Dict: "object",
+                 # Basic handling for Optional[T] -> T for type mapping
+                 Optional[str]: "string", Optional[int]: "integer", Optional[float]: "number",
+                 Optional[bool]: "boolean", Optional[list]: "array", Optional[List]: "array",
+                 Optional[dict]: "object", Optional[Dict]: "object",
+                 Any: "any", # Map Any to a generic 'any' or 'string'? Let's use 'any' for now.
+             }
 
-        for param_name, param in sig.parameters.items():
-            param_info: Dict[str, Any] = {}
-            param_type_hint = param.annotation
+             for param_name, param in sig.parameters.items():
+                 param_info: Dict[str, Any] = {}
+                 param_type_hint = param.annotation
 
-            # Determine parameter type string
-            param_type_str = "string" # Default
-            if param_type_hint is not inspect.Parameter.empty:
-                 # Handle Optional types by getting the inner type if possible
-                 origin_type = getattr(param_type_hint, "__origin__", None)
-                 if origin_type is Union:
-                      args = getattr(param_type_hint, "__args__", ())
-                      # Check if it's Optional[T] (Union[T, NoneType])
-                      is_optional = any(a is type(None) for a in args)
-                      if is_optional and len(args) == 2:
-                           actual_type = next(a for a in args if a is not type(None))
-                           param_type_str = type_mapping.get(actual_type, "string")
-                      else: # Other Unions, default to string for simplicity
-                           param_type_str = "string"
-                 elif origin_type: # Other generic types like List, Dict
-                     param_type_str = type_mapping.get(origin_type, "string")
-                 else: # Non-generic types
-                     param_type_str = type_mapping.get(param_type_hint, "string")
+                 # Determine parameter type string
+                 param_type_str = "string" # Default
+                 if param_type_hint is not inspect.Parameter.empty:
+                     origin_type = getattr(param_type_hint, "__origin__", None)
+                     if origin_type is Union: # Handles Optional[T] which is Union[T, None]
+                         args = getattr(param_type_hint, "__args__", ())
+                         non_none_args = [a for a in args if a is not type(None)]
+                         if len(non_none_args) == 1: # Likely Optional[T] or simple Union[T, None]
+                              actual_type = non_none_args[0]
+                              actual_origin = getattr(actual_type, "__origin__", None)
+                              param_type_str = type_mapping.get(actual_origin or actual_type, "string")
+                         else: # More complex Union, default to string or Any? Let's use 'any'
+                              param_type_str = "any"
+                     elif origin_type: # Other generic types like List, Dict
+                         param_type_str = type_mapping.get(origin_type, "string")
+                     else: # Non-generic types
+                         param_type_str = type_mapping.get(param_type_hint, "string")
 
+                 param_info["type"] = param_type_str
 
-            param_info["type"] = param_type_str
+                 # Determine if required (no default value)
+                 is_required = (param.default == inspect.Parameter.empty)
+                 param_info["required"] = is_required
+                 if not is_required:
+                     # JSON serialize default value if possible, otherwise use string repr
+                     try: json_default = json.dumps(param.default); param_info["default"] = param.default
+                     except TypeError: param_info["default"] = repr(param.default)
 
-            # Determine if required (no default value)
-            is_required = (param.default == inspect.Parameter.empty)
-            param_info["required"] = is_required
-            if not is_required:
-                param_info["default"] = param.default
+                 # Add basic description
+                 param_info["description"] = f"{param_name} parameter" # Can be improved by parsing docstring
 
-            # Add basic description (can be enhanced by parsing docstring further)
-            param_info["description"] = f"{param_name} parameter"
+                 # Handle array items type if possible (basic)
+                 if param_type_str == "array" and hasattr(param_type_hint, "__args__"):
+                     item_args = getattr(param_type_hint, "__args__", (Any,))
+                     if item_args:
+                          item_type_hint = item_args[0] # Use the first type argument
+                          item_origin = getattr(item_type_hint, "__origin__", None)
+                          item_type_str = type_mapping.get(item_origin or item_type_hint, "string")
+                          param_info["items"] = {"type": item_type_str}
+                     else: # Handle plain list without specified type
+                          param_info["items"] = {"type": "any"} # Or string? 'any' seems safer.
 
-            # Handle specific types like list items if possible (basic)
-            if param_type_str == "array" and hasattr(param_type_hint, "__args__"):
-                 item_type_hint = getattr(param_type_hint, "__args__", (str,))[0] # Default item type to str
-                 item_type_str = type_mapping.get(item_type_hint, "string")
-                 param_info["items"] = {"type": item_type_str}
+                 inferred_params[param_name] = param_info
 
-            inferred_params[param_name] = param_info
+             if inferred_params:
+                 tool_schema["parameters"] = inferred_params
+        except Exception as e:
+             logging.exception(f"Failed to infer parameters for tool '{tool_name}' from signature: {e}. Parameters will be empty.")
+             tool_schema["parameters"] = {}
 
-        if inferred_params:
-             tool_schema["parameters"] = inferred_params
 
     # Store in registry
     TOOL_REGISTRY[tool_name] = {
         "function": func,
         "schema": tool_schema
     }
-    logging.debug(f"Registered tool: '{tool_name}'")
+    logging.debug(f"Registered tool: '{tool_name}' with schema: {tool_schema}")
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -139,7 +145,7 @@ def register_tool(func: Optional[Callable] = None, *, name: Optional[str] = None
 
 
 # --- Accessor Functions ---
-
+# (Accessor functions remain the same)
 def get_tool_function(name: str) -> Optional[Callable]:
     """Retrieves the callable function for a registered tool."""
     return TOOL_REGISTRY.get(name, {}).get("function")
@@ -158,7 +164,7 @@ def get_all_tools() -> Dict[str, Dict[str, Any]]:
 
 
 # --- Dynamic Tool Discovery ---
-
+# (Discovery logic remains the same)
 def discover_tools():
     """
     Automatically imports all modules in the 'tools' directory
@@ -176,23 +182,27 @@ def discover_tools():
             skipped_modules += 1
             continue
 
-        # Skip __init__ and utility modules
-        if module_name in ("__init__", "tool_utils"):
+        if module_name in ("__init__", "tool_utils", "README"): # Skip README too
              skipped_modules += 1
              continue
 
         full_module_path = f"{package_name}.{module_name}"
         try:
+            # Use importlib.invalidate_caches() maybe? Not usually needed unless bytecode is stale.
             importlib.import_module(full_module_path)
             logging.debug(f"Successfully imported tool module: {full_module_path}")
             found_modules += 1
         except ImportError as e:
-            logging.error(f"Failed to import tool module '{full_module_path}': {e}", exc_info=True)
+            # Log clearly but don't stop discovery for other modules
+            logging.error(f"Failed to import tool module '{full_module_path}': {e}", exc_info=False) # Less verbose traceback usually needed here
         except Exception as e:
+             # Catch other potential errors during module import (e.g., syntax errors in the tool file)
              logging.exception(f"An unexpected error occurred while importing tool module '{full_module_path}': {e}")
 
-    logging.info(f"Tool discovery complete. Found and imported {found_modules} tool modules. Skipped {skipped_modules}. Total registered tools: {len(TOOL_REGISTRY)}")
+    logging.info(f"Tool discovery complete. Imported {found_modules} modules. Skipped {skipped_modules}. Total registered tools: {len(TOOL_REGISTRY)}")
+
+# Need json for default value serialization during inference
+import json
 
 # Automatically discover tools when this package is imported for the first time.
-# This ensures that tools defined in separate files are registered upon import.
 discover_tools()
