@@ -1,141 +1,99 @@
-# ... (imports including json) ...
 import os
 import logging
-import json
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
+import hashlib
+import sys # <-- Added for debug print
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Optional, Tuple, Union, Type
 
-from dotenv import load_dotenv
+# Import core data types
+from agent_system.core.datatypes import ChatMessage, ToolCall, ToolResult
 
-# --- Load Environment Variables ---
-# Correct calculation for project root: THREE levels up from settings.py
-# settings.py -> config/ -> agent_system/ -> agent_system_project/
-PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve() # <-- Corrected path calculation
-DOTENV_PATH = PROJECT_ROOT / ".env"
+# --- Base LLM Provider Class ---
+class LLMProvider(ABC):
+    """Abstract base class for LLM providers."""
+    def __init__(self, model: str, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
+        self.model_name = model
+        self.api_key = api_key
+        self.base_url = base_url
+        self._config_kwargs = kwargs
+        self._last_prompt_tokens: Optional[int] = None
+        self._last_completion_tokens: Optional[int] = None
+        self._total_prompt_tokens: int = 0
+        self._total_completion_tokens: int = 0
+        logging.info(f"{self.__class__.__name__} base initialized. Target Model: {self.model_name}, Base URL: {self.base_url or 'Default'}")
 
-# Check if .env exists and load it
-if DOTENV_PATH.exists():
-    load_dotenv(dotenv_path=DOTENV_PATH)
-    # Use print here as logging might not be fully configured yet
-    print(f"Loaded configuration from: {DOTENV_PATH}")
-else:
-    print(f"Warning: .env file not found at {DOTENV_PATH}. Using defaults and environment variables.")
+    def get_identifier(self) -> str:
+        if self.base_url: return f"{self.__class__.__name__}_{self.base_url}"
+        key_to_hash = self.api_key or self._get_key_from_env()
+        if key_to_hash:
+            hasher = hashlib.sha256(); hasher.update(key_to_hash.encode('utf-8')); key_hash = hasher.hexdigest()[:16]
+            return f"{self.__class__.__name__}_key_{key_hash}"
+        else: return f"{self.__class__.__name__}_local_or_env_key"
 
-# ... (rest of settings.py remains the same as the previous corrected version) ...
+    @abstractmethod
+    def _get_key_from_env(self) -> Optional[str]: pass
+    @abstractmethod
+    async def start_chat(self, system_prompt: str, tool_schemas: Optional[Any], history: Optional[List[ChatMessage]] = None) -> Any: pass
+    @abstractmethod
+    async def send_message(self, chat_session: Any, prompt_parts: List[Union[str, ToolResult]], model_name_override: Optional[str] = None, mcp_context: Optional[Dict[str, Any]] = None, mcp_metadata: Optional[Dict[str, Any]] = None) -> Tuple[Optional[str], Optional[List[ToolCall]]]: pass
 
-# --- Helper Function to Get Config Value ---
-def get_env_var(
-    var_name: str, default: Optional[Any] = None, var_type: Optional[type] = None
-) -> Any:
-    # (Implementation is correct)
-    value = os.environ.get(var_name)
-    if value is None: return default
-    if var_type:
+    def get_last_token_usage(self) -> Dict[str, Optional[int]]: return {"prompt_tokens": self._last_prompt_tokens, "completion_tokens": self._last_completion_tokens}
+    def get_total_token_usage(self) -> Dict[str, int]: return {"total_prompt_tokens": self._total_prompt_tokens, "total_completion_tokens": self._total_completion_tokens}
+    def _update_token_counts(self, prompt_tokens: Optional[int], completion_tokens: Optional[int]):
+        self._last_prompt_tokens = prompt_tokens; self._last_completion_tokens = completion_tokens
+        if prompt_tokens is not None: self._total_prompt_tokens += prompt_tokens
+        if completion_tokens is not None: self._total_completion_tokens += completion_tokens
+
+# --- Provider Factory ---
+_PROVIDER_CLASS_MAP: Optional[Dict[str, Type[LLMProvider]]] = None
+
+def get_llm_provider(provider_name: str, config: Dict[str, Any]) -> LLMProvider:
+    """Factory function to get an instance of a specific LLM provider."""
+    global _PROVIDER_CLASS_MAP
+    if _PROVIDER_CLASS_MAP is None:
+
+        # ---- START DEBUG ----
+        # Use logging now that it should be configured to DEBUG
+        logging.debug("--- DEBUG: Python Path inside get_llm_provider factory ---")
+        logging.debug("Python Path before lazy provider import:")
+        for p in sys.path: logging.debug(f"  - {p}")
+        logging.debug("--- END DEBUG ---")
+        # ---- END DEBUG ----
+
+        _PROVIDER_CLASS_MAP = {}
         try:
-            if var_type == bool: return value.lower() in ("true", "1", "yes", "t")
-            elif var_type == list: return [item.strip() for item in value.split(",") if item.strip()]
-            elif var_type == dict:
-                if default is not None: return default
-                raise ValueError(f"Cannot parse dict from environment variable '{var_name}' directly.")
-            return var_type(value)
-        except ValueError:
-            # Use logging here, assume it will be configured shortly
-            logging.warning(f"Could not cast env var '{var_name}' value '{value}' to type '{var_type}'. Using default: {default}")
-            return default
-    return value
+            from .gemini import GeminiProvider
+            _PROVIDER_CLASS_MAP["gemini"] = GeminiProvider
+            logging.debug("Successfully imported GeminiProvider")
+        except ImportError as e: logging.warning(f"Failed GeminiProvider import: {e}. Unavailable.")
+        except Exception as e: logging.error(f"Error during GeminiProvider import: {e}", exc_info=True)
+        try:
+            from .openai import OpenAIProvider
+            _PROVIDER_CLASS_MAP["openai"] = OpenAIProvider
+            logging.debug("Successfully imported OpenAIProvider")
+        except ImportError as e: logging.warning(f"Failed OpenAIProvider import: {e}. Unavailable.")
+        except Exception as e: logging.error(f"Error during OpenAIProvider import: {e}", exc_info=True)
+        try:
+            from .anthropic import AnthropicProvider
+            _PROVIDER_CLASS_MAP["anthropic"] = AnthropicProvider
+            logging.debug("Successfully imported AnthropicProvider")
+        except ImportError as e: logging.warning(f"Failed AnthropicProvider import: {e}. Unavailable.") # This might still log if import fails
+        except Exception as e: logging.error(f"Error during AnthropicProvider import: {e}", exc_info=True)
+        try:
+            from .ollama import OllamaProvider
+            _PROVIDER_CLASS_MAP["ollama"] = OllamaProvider
+            logging.debug("Successfully imported OllamaProvider")
+        except ImportError as e: logging.warning(f"Failed OllamaProvider import: {e}. Unavailable.")
+        except Exception as e: logging.error(f"Error during OllamaProvider import: {e}", exc_info=True)
+        if not _PROVIDER_CLASS_MAP: raise RuntimeError("Could not import any LLM provider classes.")
 
-# --- Core Defaults ---
-DEFAULT_COMMAND_TIMEOUT: int = 120
-# ... (rest of defaults are correct) ...
-DEFAULT_HIGH_RISK_TOOLS: List[str] = [
-    "run_shell_command", "run_sudo_command", "apt_command", "yum_command",
-    "systemctl_command", "kill_process", "edit_file", "esptool_command",
-    "openocd_command", "ssh_command", "scp_command", "gdb_mi_command",
-    "nmap_scan", "sqlmap_scan", "nikto_scan", "msfvenom_generate",
-    "gobuster_scan", "make_command", "gcc_compile",
-]
-DEFAULT_AGENT_LLM_CONFIG: Dict[str, Dict[str, Any]] = {
-    "ControllerAgent": {"provider": "gemini", "model": "gemini-1.5-flash-latest"},
-    "CodingAgent": {"provider": "gemini", "model": "gemini-1.5-pro-latest"},
-    "SysAdminAgent": {"provider": "gemini", "model": "gemini-1.5-pro-latest"},
-    "HardwareAgent": {"provider": "gemini", "model": "gemini-1.5-pro-latest"},
-    "RemoteOpsAgent": {"provider": "gemini", "model": "gemini-1.5-pro-latest"},
-    "DebuggingAgent": {"provider": "gemini", "model": "gemini-1.5-pro-latest"},
-    "CybersecurityAgent": {"provider": "gemini", "model": "gemini-1.5-pro-latest"},
-    "BuildAgent": {"provider": "gemini", "model": "gemini-1.5-pro-latest"},
-    "NetworkAgent": {"provider": "gemini", "model": "gemini-1.5-flash-latest"},
-}
-DEFAULT_AGENT_STATE_DIR: Path = PROJECT_ROOT / "agent_state"
-DEFAULT_LOG_LEVEL: str = "INFO"
-DEFAULT_MAX_GLOBAL_TOKENS: int = 1_000_000
-DEFAULT_WARN_TOKEN_THRESHOLD: int = 800_000
-
-
-# --- Load Actual Configuration ---
-# (Loading logic is correct)
-COMMAND_TIMEOUT: int = get_env_var("DEFAULT_COMMAND_TIMEOUT", DEFAULT_COMMAND_TIMEOUT, int)
-HIGH_RISK_TOOLS: List[str] = get_env_var("HIGH_RISK_TOOLS", DEFAULT_HIGH_RISK_TOOLS, list)
-AGENT_LLM_CONFIG: Dict[str, Dict[str, Any]] = DEFAULT_AGENT_LLM_CONFIG.copy()
-for agent_name in AGENT_LLM_CONFIG.keys():
-    model_override = get_env_var(f"{agent_name.upper()}_MODEL", None, str)
-    provider_override = get_env_var(f"{agent_name.upper()}_PROVIDER", None, str)
-    base_url_override = get_env_var(f"{agent_name.upper()}_BASE_URL", None, str)
-    if model_override: AGENT_LLM_CONFIG[agent_name]["model"] = model_override
-    if provider_override: AGENT_LLM_CONFIG[agent_name]["provider"] = provider_override
-    if base_url_override: AGENT_LLM_CONFIG[agent_name]["base_url"] = base_url_override
-OLLAMA_MODEL_GLOBAL = get_env_var("OLLAMA_MODEL", None, str)
-OLLAMA_BASE_URL_GLOBAL = get_env_var("OLLAMA_BASE_URL", None, str)
-if OLLAMA_BASE_URL_GLOBAL:
-    for agent_name in AGENT_LLM_CONFIG:
-        if AGENT_LLM_CONFIG[agent_name].get("provider") == "ollama" and "base_url" not in AGENT_LLM_CONFIG[agent_name]:
-             AGENT_LLM_CONFIG[agent_name]["base_url"] = OLLAMA_BASE_URL_GLOBAL
-if OLLAMA_MODEL_GLOBAL:
-     for agent_name in AGENT_LLM_CONFIG:
-        if AGENT_LLM_CONFIG[agent_name].get("provider") == "ollama" and AGENT_LLM_CONFIG[agent_name].get("model") is None:
-             AGENT_LLM_CONFIG[agent_name]["model"] = OLLAMA_MODEL_GLOBAL
-for agent_name, config in AGENT_LLM_CONFIG.items():
-    if config.get("provider") == "ollama":
-        if "base_url" not in config or not config["base_url"]:
-             config["base_url"] = "http://localhost:11434"
-             print(f"Warning: Agent '{agent_name}' uses Ollama but no base URL found. Using default: {config['base_url']}.") # Print early warning
-        if "model" not in config or not config["model"]:
-            raise ValueError(f"Agent '{agent_name}' uses Ollama provider, but no model name specified globally (OLLAMA_MODEL) or for the agent ({agent_name.upper()}_MODEL).")
-
-MAX_GLOBAL_TOKENS: int = get_env_var("MAX_GLOBAL_TOKENS", DEFAULT_MAX_GLOBAL_TOKENS, int)
-WARN_TOKEN_THRESHOLD: int = get_env_var("WARN_TOKEN_THRESHOLD", DEFAULT_WARN_TOKEN_THRESHOLD, int)
-AGENT_STATE_DIR_STR: str = get_env_var("AGENT_STATE_DIR", str(DEFAULT_AGENT_STATE_DIR), str)
-AGENT_STATE_DIR: Path = Path(AGENT_STATE_DIR_STR).resolve()
-try:
-    AGENT_STATE_DIR.mkdir(parents=True, exist_ok=True)
-except OSError as e:
-    print(f"ERROR: Could not create agent state directory {AGENT_STATE_DIR}: {e}")
-
-# --- Logging Configuration ---
-# (Logging setup is correct)
-LOG_LEVEL_STR: str = get_env_var("LOG_LEVEL", DEFAULT_LOG_LEVEL, str).upper()
-LOG_LEVEL_MAP: Dict[str, int] = {
-    "DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING,
-    "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL,
-}
-LOG_LEVEL: int = LOG_LEVEL_MAP.get(LOG_LEVEL_STR, logging.INFO)
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format='%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s:%(lineno)d] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("google.generativeai").setLevel(logging.WARNING)
-logging.getLogger("anthropic").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-
-# --- Log loaded settings ---
-# (Logging of settings is correct)
-logging.info("--- Configuration Loaded ---")
-logging.info(f"Project Root: {PROJECT_ROOT}")
-logging.info(f".env Path: {DOTENV_PATH} (Loaded: {DOTENV_PATH.exists()})")
-logging.info(f"Log Level: {LOG_LEVEL_STR} ({LOG_LEVEL})")
-# ... (rest of logging messages) ...
-logging.debug(f"Agent LLM Config (Defaults + Overrides):\n{json.dumps(AGENT_LLM_CONFIG, indent=2)}")
-logging.info("--- End Configuration ---")
+    provider_name_lower = provider_name.lower()
+    ProviderClass = _PROVIDER_CLASS_MAP.get(provider_name_lower)
+    if not ProviderClass: raise ImportError(f"Provider '{provider_name}' could not be loaded. Check import logs.")
+    if "model" not in config: raise ValueError(f"Config for '{provider_name}' missing 'model'.")
+    try:
+        instance = ProviderClass(**config)
+        logging.debug(f"Successfully created provider instance: {instance.get_identifier()}")
+        return instance
+    except (ImportError, ValueError, ConnectionError) as e: raise RuntimeError(f"Init failed for provider '{provider_name}': {e}") from e
+    except Exception as e: raise RuntimeError(f"Unexpected error initializing provider '{provider_name}': {e}") from e
