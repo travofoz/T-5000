@@ -291,16 +291,3 @@ async def node_run_script(script_path: str, args: Optional[List[str]] = None) ->
         return f"Error running Node.js script '{script_path}': {e}"
 
 
-# Need _run_command_async defined (via placeholder import)
-async def _run_command_async(
-    command: Union[List[str], str],
-    timeout: int = settings.COMMAND_TIMEOUT,
-    cwd: Optional[Union[str, Path]] = None,
-    input_data: Optional[bytes] = None,
-    check: bool = False,
-    use_shell: bool = False,
-    env: Optional[Dict[str, str]] = None
-) -> Tuple[bool, bytes, bytes, int]:
-    """Placeholder: Calls the actual implementation from tool_utils"""
-    from .tool_utils import _run_command_async as util_run_async
-    return await util_run_async(command, timeout, cwd, input_data, check, use_shell, env)

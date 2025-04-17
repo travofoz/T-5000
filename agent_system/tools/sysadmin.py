@@ -116,16 +116,3 @@ async def systemctl_command(action: str, service: str, use_sudo: bool = True) ->
         return await run_tool_command_async(
             tool_name="systemctl_command (no-sudo)", command=base_command, success_rc=success_codes, failure_notes=failure_notes
         )
-
-# Placeholder needed by tools using _run_command_async directly (if any were added - check needed)
-async def _run_command_async(
-    command: Union[List[str], str],
-    timeout: int = settings.COMMAND_TIMEOUT,
-    cwd: Optional[Union[str, Path]] = None,
-    input_data: Optional[bytes] = None,
-    check: bool = False,
-    use_shell: bool = False,
-    env: Optional[Dict[str, str]] = None
-) -> Tuple[bool, bytes, bytes, int]:
-    from .tool_utils import _run_command_async as util_run_async
-    return await util_run_async(command, timeout, cwd, input_data, check, use_shell, env)

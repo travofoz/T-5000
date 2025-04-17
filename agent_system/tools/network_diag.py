@@ -205,16 +205,3 @@ async def openssl_command(args: List[str], input_data: Optional[str] = None) -> 
     )
 
 
-# Helper placeholder (needed for netstat direct call to _run_command_async)
-async def _run_command_async(
-    command: Union[List[str], str],
-    timeout: int = settings.COMMAND_TIMEOUT,
-    cwd: Optional[Union[str, Path]] = None,
-    input_data: Optional[bytes] = None,
-    check: bool = False,
-    use_shell: bool = False,
-    env: Optional[Dict[str, str]] = None
-) -> Tuple[bool, bytes, bytes, int]:
-    """Placeholder: Calls the actual implementation from tool_utils"""
-    from .tool_utils import _run_command_async as util_run_async
-    return await util_run_async(command, timeout, cwd, input_data, check, use_shell, env)
