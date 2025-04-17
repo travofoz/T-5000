@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }}</title>
+    <style>
+        :root {
+            --bg-color: #f8f9fa;
+            --text-color: #212529;
+            --border-color: #dee2e6;
+            --user-msg-bg: #0d6efd;
+            --user-msg-text: #ffffff;
+            --agent-msg-bg: #e9ecef;
+            --agent-msg-text: #212529;
+            --error-msg-bg: #f8d7da;
+            --error-msg-text: #842029;
+            --input-bg: #ffffff;
+            --button-bg: #0d6efd;
+            --button-text: #ffffff;
+            --button-hover-bg: #0b5ed7;
+            --link-color: #0d6efd;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        .container {
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: var(--input-bg);
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        h1 {
+            text-align: center;
+            color: var(--text-color);
+            margin-bottom: 20px;
+        }
+        #chatbox {
+            flex-grow: 1;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            overflow-y: scroll;
+            padding: 15px;
+            margin-bottom: 15px;
+            background-color: #fdfdfd; /* Slightly off-white */
+        }
+        .message {
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            border-radius: 15px; /* Rounded corners */
+            max-width: 80%;
+            word-wrap: break-word; /* Wrap long words */
+            line-height: 1.4;
+        }
+        .user-msg {
+            background-color: var(--user-msg-bg);
+            color: var(--user-msg-text);
+            margin-left: auto; /* Align right */
+            border-bottom-right-radius: 5px; /* Slightly different corner */
+        }
+        .agent-msg {
+            background-color: var(--agent-msg-bg);
+            color: var(--agent-msg-text);
+            margin-right: auto; /* Align left */
+            border-bottom-left-radius: 5px; /* Slightly different corner */
+            white-space: pre-wrap; /* Preserve whitespace and wrap */
+        }
+        .error-msg {
+            background-color: var(--error-msg-bg);
+            color: var(--error-msg-text);
+            margin-right: auto;
+            border: 1px solid var(--error-msg-text);
+             white-space: pre-wrap;
+        }
+        .input-area {
+            display: flex;
+            gap: 10px;
+        }
+        #prompt {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+        #send-button {
+            padding: 10px 20px;
+            background-color: var(--button-bg);
+            color: var(--button-text);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background-color 0.2s ease;
+        }
+        #send-button:hover {
+            background-color: var(--button-hover-bg);
+        }
+        #send-button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .spinner { /* Basic loading spinner */
+            display: none; /* Hidden by default */
+            margin: 5px auto;
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border-left-color: var(--user-msg-bg);
+            animation: spin 1s ease infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Multi-Agent System</h1>
+        <div id="chatbox">
+             <!-- Chat messages will appear here -->
+        </div>
+        <div class="spinner" id="loading-spinner"></div> <!-- Spinner element -->
+        <div class="input-area">
+            <input type="text" id="prompt" placeholder="Enter your request for the Controller Agent..." autocomplete="off">
+            <button id="send-button" onclick="sendPrompt()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        const chatbox = document.getElementById('chatbox');
+        const promptInput = document.getElementById('prompt');
+        const sendButton = document.getElementById('send-button');
+        const loadingSpinner = document.getElementById('loading-spinner');
+
+        // Simple HTML Sanitizer (replace with a robust library like DOMPurify for production)
+        function sanitizeHTML(str) {
+            const temp = document.createElement('div');
+            temp.textContent = str;
+            return temp.innerHTML;
+        }
+
+        function addMessage(sender, message, isError = false) {
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add('message');
+
+            let messageClass = '';
+            let senderPrefix = '';
+
+            if (isError) {
+                messageClass = 'error-msg';
+                senderPrefix = 'Error';
+            } else if (sender === 'User') {
+                messageClass = 'user-msg';
+                senderPrefix = 'You';
+            } else { // Agent or System response
+                messageClass = 'agent-msg';
+                senderPrefix = 'Agent'; // Keep it simple as 'Agent' for now
+            }
+            msgDiv.classList.add(messageClass);
+
+            // Sanitize message content before inserting
+            const sanitizedMessage = sanitizeHTML(message);
+
+            // Use innerHTML to allow basic formatting like newlines preserved by pre-wrap
+            msgDiv.innerHTML = `<strong>${senderPrefix}:</strong><br>${sanitizedMessage}`;
+
+            chatbox.appendChild(msgDiv);
+            chatbox.scrollTop = chatbox.scrollHeight; // Auto-scroll to bottom
+        }
+
+        async function sendPrompt() {
+            const prompt = promptInput.value.trim();
+            if (!prompt) return;
+
+            addMessage('User', prompt);
+            promptInput.value = ''; // Clear input
+            promptInput.disabled = true; // Disable input
+            sendButton.disabled = true; // Disable button
+            loadingSpinner.style.display = 'block'; // Show spinner
+
+            try {
+                const response = await fetch('/api/prompt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: prompt })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    // Check if the response text itself indicates an error from the agent side
+                    const isAgentError = data.response && data.response.startsWith("[Error:");
+                    addMessage('Agent', data.response, isAgentError);
+                } else {
+                    // Handle HTTP errors from the server/API endpoint
+                    addMessage('Server', data.error || `HTTP Error ${response.status}`, true);
+                }
+            } catch (error) {
+                console.error("Fetch error:", error);
+                addMessage('System', `Network or server connection error: ${error}`, true);
+            } finally {
+                 promptInput.disabled = false; // Re-enable input
+                 sendButton.disabled = false; // Re-enable button
+                 loadingSpinner.style.display = 'none'; // Hide spinner
+                 promptInput.focus(); // Set focus back to input
+            }
+        }
+
+        // Allow sending with Enter key
+        promptInput.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter' && !sendButton.disabled) { // Prevent sending while processing
+                e.preventDefault(); // Prevent default Enter behavior (like form submission)
+                sendPrompt();
+            }
+        });
+
+         // Add initial welcome message (optional)
+        // addMessage('System', 'Welcome! Enter your request for the Controller Agent.');
+        promptInput.focus(); // Focus input on load
+
+    </script>
+</body>
+</html>

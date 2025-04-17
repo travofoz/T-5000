@@ -1,0 +1,2 @@
+# This empty file ensures the agent_state/ directory is tracked by Git,
+# even when it's empty initially. Agent history/state files will be saved here.

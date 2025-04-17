@@ -1,0 +1,25 @@
+# Core LLM SDKs
+google-generativeai>=0.5.0 # Or latest compatible version
+openai>=1.10.0           # Or latest compatible version
+anthropic>=0.20.0        # Or latest compatible version
+
+# Utilities
+requests>=2.25.0         # For Ollama provider (older sync version)
+python-dotenv>=1.0.0     # For loading .env configuration
+httpx>=0.20.0            # Async HTTP client (used by Ollama async provider, potentially tools)
+
+# Web Framework
+Flask>=2.0.0             # For the Web UI
+
+# Hardware Tools (Optional - install if needed)
+pyserial>=3.5            # For serial_port tools
+# aioserial              # Async alternative for serial (consider adding if fully async hardware interaction is desired later)
+
+# Testing Frameworks
+pytest>=7.0.0
+pytest-flask>=1.2.0      # For testing Flask applications with pytest
+pytest-asyncio>=0.18.0   # For testing asyncio code with pytest
+pytest-mock>=3.6.0       # For mocking objects during tests
+
+# Note: Some tools rely on system binaries being installed (e.g., git, grep, find, nmap, etc.)
+# These are not Python dependencies but runtime requirements for the tools.
