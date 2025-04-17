@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import uuid
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple # <-- Added List, Tuple
 
 # Import necessary agent/provider types
 from .agent import BaseAgent
@@ -21,11 +21,8 @@ class Orchestrator:
 
     def __init__(self):
         # Stores active agents, potentially mapped by task ID or session ID.
-        # For now, let's assume it might hold references if needed, but the
-        # primary interaction point will likely remain the Controller for delegation.
         self.active_agents: Dict[str, BaseAgent] = {} # Example: map session_id to Controller
         logging.info("Orchestrator initialized.")
-        # In a more complex scenario, the orchestrator might initialize providers/agents itself.
 
     async def run_agent_task(self, agent: BaseAgent, prompt: str, load_state: bool = True, save_state: bool = True) -> str:
         """
@@ -40,7 +37,8 @@ class Orchestrator:
         Returns:
             The final string response from the agent.
         """
-        logging.info(f"Orchestrator dispatching task to agent '{agent.name}' (Session: {agent.session_id or 'None'})")
+        agent_id = f"Agent '{agent.name}' (Session: {agent.session_id or 'None'})" # For logging clarity
+        logging.info(f"Orchestrator dispatching task to {agent_id}")
         try:
             # Directly call the agent's run method
             result = await agent.run(
@@ -48,7 +46,7 @@ class Orchestrator:
                 load_state=load_state,
                 save_state=save_state
             )
-            logging.info(f"Orchestrator received result from agent '{agent.name}' (Session: {agent.session_id or 'None'})")
+            logging.info(f"Orchestrator received result from {agent_id}")
             return result
         except Exception as e:
             logging.exception(f"Error during orchestrated run of agent '{agent.name}': {e}")
@@ -67,10 +65,12 @@ class Orchestrator:
             A list of result strings, one for each task, in the order they were provided.
         """
         logging.info(f"Orchestrator running {len(tasks)} tasks concurrently.")
+        # Create coroutines for each task
         aws = [
             self.run_agent_task(agent, prompt, load_state, save_state)
             for agent, prompt in tasks
         ]
+        # Execute concurrently and gather results
         results = await asyncio.gather(*aws, return_exceptions=True)
 
         # Process results, logging any exceptions gathered
@@ -80,13 +80,18 @@ class Orchestrator:
                 agent_name = tasks[i][0].name
                 logging.error(f"Concurrent task for agent '{agent_name}' failed: {res}")
                 final_results.append(f"[Orchestrator Error: Task for '{agent_name}' failed: {res}]")
-            else:
-                final_results.append(res)
+            elif isinstance(res, str): # Ensure it's a string result
+                 final_results.append(res)
+            else: # Handle unexpected return types if necessary
+                 agent_name = tasks[i][0].name
+                 logging.warning(f"Concurrent task for agent '{agent_name}' returned unexpected type: {type(res)}. Converting to string.")
+                 final_results.append(str(res))
+
 
         logging.info(f"Orchestrator completed {len(tasks)} concurrent tasks.")
         return final_results
 
-    # Add methods for agent management, inter-agent communication etc. later as needed.
+    # Potential future methods for managing agents or communication
     # def register_agent(self, agent: BaseAgent, agent_id: Optional[str] = None): ...
     # def get_agent(self, agent_id: str) -> Optional[BaseAgent]: ...
     # async def route_message(self, sender_id: str, recipient_id: str, message: Any): ...
