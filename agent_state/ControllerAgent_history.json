@@ -1,0 +1,22 @@
+[
+  {
+    "role": "user",
+    "parts": [
+      {
+        "type": "text",
+        "content": "help"
+      }
+    ],
+    "timestamp": 1744866520.581738
+  },
+  {
+    "role": "assistant",
+    "parts": [
+      {
+        "type": "text",
+        "content": "[Error: Invalid Gemini API Key.]"
+      }
+    ],
+    "timestamp": 1744866521.1082504
+  }
+]
