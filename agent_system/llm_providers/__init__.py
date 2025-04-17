@@ -1,7 +1,8 @@
 import os
 import logging
 import hashlib
-import sys # Import sys
+import sys
+import importlib # Ensure importlib is imported
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Tuple, Union, Type
 
@@ -25,11 +26,12 @@ class LLMProvider(ABC):
     def get_identifier(self) -> str:
         """Returns unique identifier for caching provider instances."""
         if self.base_url: return f"{self.__class__.__name__}_{self.base_url}"
-        key_to_hash = self.api_key or self._get_key_from_env()
-        if key_to_hash:
-            hasher = hashlib.sha256(); hasher.update(key_to_hash.encode('utf-8')); key_hash = hasher.hexdigest()[:16]
-            return f"{self.__class__.__name__}_key_{key_hash}"
-        else: return f"{self.__class__.__name__}_local_or_env_key"
+        key = self.api_key or self._get_key_from_env()
+        if key:
+            h = hashlib.sha256(key.encode()).hexdigest()[:16]
+            return f"{self.__class__.__name__}_key_{h}"
+        else:
+            return f"{self.__class__.__name__}_local_or_env_key"
 
     @abstractmethod
     def _get_key_from_env(self) -> Optional[str]:
@@ -44,7 +46,7 @@ class LLMProvider(ABC):
     @abstractmethod
     async def send_message(self, chat_session: Any, prompt_parts: List[Union[str, ToolResult]], model_name_override: Optional[str] = None, mcp_context: Optional[Dict[str, Any]] = None, mcp_metadata: Optional[Dict[str, Any]] = None) -> Tuple[Optional[str], Optional[List[ToolCall]]]:
         """Sends message, handles tokens. Accepts optional MCP context/metadata (ignored by default)."""
-        pass
+        pass # Implementation in subclasses
 
     def get_last_token_usage(self) -> Dict[str, Optional[int]]:
         """Returns approximate token usage for the most recent send_message call."""
@@ -64,54 +66,60 @@ class LLMProvider(ABC):
 _PROVIDER_CLASS_MAP: Optional[Dict[str, Type[LLMProvider]]] = None
 
 def get_llm_provider(provider_name: str, config: Dict[str, Any]) -> LLMProvider:
-    """Factory function to get an instance of a specific LLM provider."""
+    """Factory function to get an instance of a specific LLM provider (Lazy Loading)."""
     global _PROVIDER_CLASS_MAP
     if _PROVIDER_CLASS_MAP is None:
-
-        # ---- START DEBUG ----
-        print("\n--- DEBUG: Python Path inside get_llm_provider factory ---") # Use print
-        print("Python Path before lazy provider import:") # Use print
-        for p in sys.path:
-            print(f"  - {p}") # Use print to guarantee output
-            # logging.debug(f"  - {p}") # Keep debug log as well
-        print("--- END DEBUG ---\n") # Use print
-        # ---- END DEBUG ----
-
-        # Lazy load the map
         _PROVIDER_CLASS_MAP = {}
-        try:
-            from .gemini import GeminiProvider
-            _PROVIDER_CLASS_MAP["gemini"] = GeminiProvider
-            logging.debug("Successfully imported GeminiProvider")
-        except ImportError as e: logging.warning(f"Failed GeminiProvider import: {e}. Unavailable.")
-        except Exception as e: logging.error(f"Error during GeminiProvider import/setup: {e}", exc_info=True)
-        try:
-            from .openai import OpenAIProvider
-            _PROVIDER_CLASS_MAP["openai"] = OpenAIProvider
-            logging.debug("Successfully imported OpenAIProvider")
-        except ImportError as e: logging.warning(f"Failed OpenAIProvider import: {e}. Unavailable.")
-        except Exception as e: logging.error(f"Error during OpenAIProvider import/setup: {e}", exc_info=True)
-        try:
-            from .anthropic import AnthropicProvider # <<< The potentially problematic import
-            _PROVIDER_CLASS_MAP["anthropic"] = AnthropicProvider
-            logging.debug("Successfully imported AnthropicProvider")
-        except ImportError as e: logging.warning(f"Failed AnthropicProvider import: {e}. Unavailable.") # This is likely being hit
-        except Exception as e: logging.error(f"Error during AnthropicProvider import/setup: {e}", exc_info=True)
-        try:
-            from .ollama import OllamaProvider
-            _PROVIDER_CLASS_MAP["ollama"] = OllamaProvider
-            logging.debug("Successfully imported OllamaProvider")
-        except ImportError as e: logging.warning(f"Failed OllamaProvider import: {e}. Unavailable.")
-        except Exception as e: logging.error(f"Error during OllamaProvider import/setup: {e}", exc_info=True)
-        if not _PROVIDER_CLASS_MAP: raise RuntimeError("Could not import any LLM provider classes.")
+        # Map is populated lazily below when a provider is first requested
 
     provider_name_lower = provider_name.lower()
     ProviderClass = _PROVIDER_CLASS_MAP.get(provider_name_lower)
-    if not ProviderClass: raise ImportError(f"Provider '{provider_name}' could not be loaded. Check import logs.")
-    if "model" not in config: raise ValueError(f"Config for provider '{provider_name}' must include 'model'.")
+
+    if not ProviderClass:
+        # --- LAZY IMPORT PROVIDER CLASS ---
+        module_name: Optional[str] = None
+        class_name: Optional[str] = None
+
+        if provider_name_lower == "gemini": module_name, class_name = ".gemini", "GeminiProvider"
+        elif provider_name_lower == "openai": module_name, class_name = ".openai", "OpenAIProvider"
+        elif provider_name_lower == "anthropic": module_name, class_name = ".anthropic", "AnthropicProvider"
+        elif provider_name_lower == "ollama": module_name, class_name = ".ollama", "OllamaProvider"
+        else: raise ValueError(f"Unknown LLM provider name: '{provider_name}'")
+
+        try:
+            logging.debug(f"Attempting lazy import for: {module_name}.{class_name}")
+            # Use importlib (imported at the top)
+            provider_module = importlib.import_module(module_name, package=__package__) # Relative import
+            ProviderClass = getattr(provider_module, class_name)
+            _PROVIDER_CLASS_MAP[provider_name_lower] = ProviderClass # Cache the class itself
+            logging.debug(f"Successfully imported {class_name}")
+        except ImportError as e:
+            # Log detailed error including traceback if import fails
+            logging.error(f"Failed to import module or class for provider '{provider_name}': {e}", exc_info=True)
+            # Raise a clear error indicating the provider cannot be loaded
+            raise ImportError(f"Provider '{provider_name}' could not be loaded. Check installation ({module_name}) and import logs.") from e
+        except Exception as e:
+            # Catch other potential errors during import process
+            logging.error(f"Unexpected error during lazy import for provider '{provider_name}': {e}", exc_info=True)
+            raise RuntimeError(f"Failed to load provider '{provider_name}' due to unexpected import error.") from e
+        # --- END LAZY IMPORT ---
+
+    if not ProviderClass: # Should be caught above, but defensive check
+        raise RuntimeError(f"Provider class for '{provider_name}' not found after import attempt.")
+
+    if "model" not in config:
+         raise ValueError(f"Configuration for provider '{provider_name}' must include 'model' name.")
+
     try:
+        # Instantiate the provider class
         instance = ProviderClass(**config)
         logging.debug(f"Successfully created provider instance: {instance.get_identifier()}")
         return instance
-    except (ImportError, ValueError, ConnectionError) as e: raise RuntimeError(f"Init failed for provider '{provider_name}': {e}") from e
-    except Exception as e: raise RuntimeError(f"Unexpected error initializing provider '{provider_name}': {e}") from e
+    # Catch specific, expected init errors
+    except (ValueError, ConnectionError) as e:
+        logging.error(f"Failed to initialize provider '{provider_name}' with config {config}: {e}", exc_info=True)
+        raise RuntimeError(f"Initialization failed for provider '{provider_name}': {e}") from e
+    # Catch any other unexpected errors during instantiation
+    except Exception as e:
+        logging.exception(f"Unexpected error initializing provider '{provider_name}' with config {config}: {e}")
+        raise RuntimeError(f"Unexpected error initializing provider '{provider_name}': {e}") from e

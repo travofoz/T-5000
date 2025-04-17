@@ -18,5 +18,25 @@
       }
     ],
     "timestamp": 1744866521.1082504
+  },
+  {
+    "role": "user",
+    "parts": [
+      {
+        "type": "text",
+        "content": "list tools"
+      }
+    ],
+    "timestamp": 1744872979.197692
+  },
+  {
+    "role": "assistant",
+    "parts": [
+      {
+        "type": "text",
+        "content": "[Error: Invalid Gemini API Key.]"
+      }
+    ],
+    "timestamp": 1744872979.5973597
   }
 ]
