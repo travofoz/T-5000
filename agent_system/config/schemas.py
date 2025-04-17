@@ -1,4 +1,4 @@
-# ... (imports including FunctionDeclaration from .types) ...
+# ... (imports: logging, json, typing, Optional fallbacks for google libs) ...
 import logging
 import json
 from typing import List, Dict, Any, Optional, Tuple, Union
@@ -6,9 +6,11 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 try:
     import google.generativeai as genai
     import google.ai.generativelanguage as glm
+    # Only import FunctionDeclaration from types for now
     from google.generativeai.types import FunctionDeclaration
     GEMINI_LIBS_AVAILABLE = True
 except ImportError:
+    # ... (fallback definitions) ...
     logging.info("google.generativeai library not found...")
     GEMINI_LIBS_AVAILABLE = False
     genai = None; glm = None; FunctionDeclaration = Any
@@ -19,6 +21,7 @@ def _translate_params_to_json_schema(#...
     parameters: Optional[Dict[str, Dict[str, Any]]]
 ) -> Tuple[Dict[str, Any], List[str]]:
     # (Implementation unchanged)
+    # ... (same as previous correct version) ...
     if not parameters: return {}, []
     properties = {}; required_list = []
     for name, details in parameters.items():
@@ -29,9 +32,9 @@ def _translate_params_to_json_schema(#...
         if param_type not in valid_types: logging.warning(f"Param '{name}' bad type '{param_type}'. Defaulting to 'string'."); param_type = "string"
         prop_schema["type"] = param_type
         if param_type == "array":
-            items_details = details.get("items"); item_type = "string"
+            items_details = details.get("items"); item_type = "string" # Default item type
             if isinstance(items_details, dict) and "type" in items_details: item_type = items_details.get("type", "string")
-            elif items_details is not None: logging.warning(f"Param '{name}' array 'items' invalid. Defaulting items to 'string'.")
+            elif items_details is not None: logging.warning(f"Param '{name}' array 'items' invalid. Defaulting items to type 'string'.")
             prop_schema["items"] = {"type": item_type}
         elif param_type == "object":
              if "additionalProperties" in details and isinstance(details["additionalProperties"], dict): prop_schema["additionalProperties"] = details["additionalProperties"]
@@ -39,6 +42,7 @@ def _translate_params_to_json_schema(#...
         properties[name] = prop_schema
         if details.get("required", False): required_list.append(name)
     return properties, required_list
+
 
 # --- Provider-Specific Translation Functions ---
 # (translate_to_openai_schema, translate_to_anthropic_schema unchanged) ...
@@ -62,59 +66,80 @@ def translate_to_anthropic_schema(registered_tools: Dict[str, GenericToolSchema]
         anthropic_tools.append({"name": name, "description": schema.get("description", ""),"input_schema": {"type": "object", "properties": properties }})
     return anthropic_tools
 
-
 def translate_to_gemini_schema(registered_tools: Dict[str, GenericToolSchema], tool_names: List[str]) -> List[Any]:
-    """Generates Gemini-compatible tool schema list (FunctionDeclaration)."""
+    """
+    Generates Gemini-compatible tool schema list (FunctionDeclaration).
+    Constructs parameter schema as a dictionary matching the proto structure.
+    """
     if not GEMINI_LIBS_AVAILABLE:
         logging.error("Cannot generate Gemini schema: google.generativeai library not available.")
         return []
 
     gemini_tools = []
-    type_mapping = {"string": glm.Type.STRING, "number": glm.Type.NUMBER, "integer": glm.Type.INTEGER, "boolean": glm.Type.BOOLEAN, "array": glm.Type.ARRAY, "object": glm.Type.OBJECT, "any": glm.Type.STRING}
+    # Mapping from simple types to google.ai.generativelanguage.Type enum values
+    # Ensure glm is available before accessing its attributes
+    type_mapping_proto = {
+        "string": glm.Type.STRING, "number": glm.Type.NUMBER, "integer": glm.Type.INTEGER,
+        "boolean": glm.Type.BOOLEAN, "array": glm.Type.ARRAY, "object": glm.Type.OBJECT,
+        "any": glm.Type.STRING, # Map 'any' to string as a fallback
+    } if glm else {}
 
     for name in tool_names:
         if name not in registered_tools: continue
-        schema = registered_tools[name];
+        schema = registered_tools[name]
         if not isinstance(schema, dict): continue
-        parameters = schema.get("parameters"); gemini_properties = {}; required_list = []
-        if parameters and isinstance(parameters, dict):
-            for param_name, details in parameters.items():
+
+        parameters_dict: Optional[Dict[str, Any]] = None # This will be the dict passed to FunctionDeclaration
+        gemini_properties_dict: Dict[str, Dict[str, Any]] = {} # Dict for 'properties' field within parameters_dict
+        required_list: List[str] = []
+        raw_parameters = schema.get("parameters")
+
+        if raw_parameters and isinstance(raw_parameters, dict):
+            for param_name, details in raw_parameters.items():
                  if not isinstance(details, dict): continue
-                 param_type_str = details.get("type", "string"); gemini_type = type_mapping.get(param_type_str, glm.Type.STRING)
-                 prop_schema = glm.Schema(type=gemini_type, description=details.get("description", ""))
-                 if gemini_type == glm.Type.ARRAY:
+                 param_type_str = details.get("type", "string")
+                 # Use the integer enum value from the mapping
+                 gemini_type_enum_val = type_mapping_proto.get(param_type_str, glm.Type.STRING if glm else 1) # Default to STRING's value
+
+                 # Build the property dictionary matching the Schema proto structure
+                 prop_dict: Dict[str, Any] = {
+                      "type_": gemini_type_enum_val, # Note the underscore for 'type' proto field
+                      "description": details.get("description", "")
+                 }
+
+                 # Handle array items
+                 if gemini_type_enum_val == (glm.Type.ARRAY if glm else -1): # Use enum value for comparison
                      item_details = details.get("items", {"type": "string"})
                      item_type_str = item_details.get("type", "string") if isinstance(item_details, dict) else "string"
-                     item_type = type_mapping.get(item_type_str, glm.Type.STRING); prop_schema.items = glm.Schema(type=item_type)
-                 gemini_properties[param_name] = prop_schema
+                     item_type_enum_val = type_mapping_proto.get(item_type_str, glm.Type.STRING if glm else 1)
+                     # The 'items' field in the proto expects a Schema message/dict
+                     prop_dict["items"] = {"type_": item_type_enum_val}
+
+                 gemini_properties_dict[param_name] = prop_dict
                  if details.get("required", False): required_list.append(param_name)
 
-        # --- Wrap the FunctionDeclaration creation in a try/except ---
+            # Construct the main parameters dictionary only if properties exist
+            if gemini_properties_dict:
+                 parameters_dict = {
+                      "type_": glm.Type.OBJECT if glm else 5, # Type.OBJECT enum value
+                      "properties": gemini_properties_dict,
+                      "required": required_list
+                 }
+
+        # --- Create FunctionDeclaration using the dictionary for parameters ---
         try:
-            params_schema = glm.Schema(
-                 type=glm.Type.OBJECT, properties=gemini_properties, required=required_list
-            ) if gemini_properties else None
-
-            func_decl = FunctionDeclaration(
-                name=name, description=schema.get("description", ""),
-                parameters=params_schema
-            )
-            gemini_tools.append(func_decl)
-        except AttributeError as e:
-            # Catch the specific ".copy()" error originating from the library internal
-            if "'Schema' object has no attribute 'copy'" in str(e) or "Unknown field for Schema: copy" in str(e):
-                 logging.error(f"Caught likely internal Gemini library bug (AttributeError: Schema.copy) when creating FunctionDeclaration for tool '{name}'. Tool schema for Gemini will be incomplete/ignored.", exc_info=False)
-                 # Append None or skip? Skipping means fewer tools sent. Let's skip.
-                 # gemini_tools.append(None) # Or maybe append a basic declaration without params?
-            else:
-                 # Re-raise other AttributeErrors
-                 logging.exception(f"Unexpected AttributeError during Gemini schema creation for tool '{name}'.")
-                 # raise # Or skip? Skipping seems safer for allowing app to run.
+             # Pass the constructed dictionary directly to the parameters argument
+             func_decl = FunctionDeclaration(
+                 name=name,
+                 description=schema.get("description", ""),
+                 parameters=parameters_dict # Pass the dictionary, or None if no params
+             )
+             gemini_tools.append(func_decl)
         except Exception as e:
-            logging.exception(f"Unexpected error during Gemini schema creation for tool '{name}'.")
-            # Skip this tool on other errors too
+             # Catch errors during FunctionDeclaration creation itself
+             logging.exception(f"Unexpected error creating Gemini FunctionDeclaration for tool '{name}'. Parameters Dict: {parameters_dict}")
+             # Skip this tool if declaration fails
 
-    # Filter out any None values added due to errors? Not needed if we skip appending.
     return gemini_tools
 
 # ...(translate_to_ollama_schema_string and translate_schema_for_provider remain the same)...
